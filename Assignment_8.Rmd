@@ -1,0 +1,101 @@
+---
+title: "Prediction Assignment"
+author: "Oleksandr Myronov"
+date: "29 06 2021"
+output: html_document
+---
+
+This Prediction Assignment is based on [Weight Lifting Exercises dataset](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv), description for this data can be found [here](http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har).
+The goal of this study is prediction of manner in which people do exercises (barbell lifts).
+
+## Loading and preprocessing data
+Original data have 160 columns, some of them have NA-s, so we should perform some data cleaning. In this study we just remove columns with NA-s to make data suitable for machine learning algorithms.
+```{r, warning=F, message=F, cache=T}
+library(ggplot2)      #Loading libraries
+library(dplyr)
+library(caret)
+library(e1071)
+library(klaR)
+download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv",
+              "pml-training.csv")
+read.csv("pml-training.csv", header=T,       #reading .csv file
+         na.strings = c("NA", "")) %>%       #reading empty strings as NA-s
+mutate(classe=factor(classe)) -> HARdata     #factorizing output variable
+
+notNAcols<-apply(is.na(HARdata), 2, sum)==0  #finding columns without NA-s
+HARdata<-HARdata[,notNAcols]                 #removing NA-s
+HARdata<-HARdata[,-c(1:7)]                   #removing timestamps and index   
+set.seed(234837)
+inTraining<-createDataPartition(HARdata$classe, p=0.75, list=F) 
+trainset<-HARdata[inTraining,]               #creating training set                                    
+crossval<-HARdata[-inTraining,]              #creating cross-validation set
+dim(trainset)                                #printing training set dimensions
+```
+## Removing highly-correlated predictors
+We get dataset with 53 predictors, some of them may be highly correlated. Next we remove predictors with correlation more than 0.75, (excluding last "classe" term, which is our predicted variable).
+```{r, cache=T, message=F}
+highlyCorrelated<-findCorrelation(cor(select(trainset,-classe)), cutoff = .75)
+trainset2<-trainset[,-highlyCorrelated]
+dim(trainset2)
+```
+Now we reduced number of columns from 53 to 32.
+
+## Fitting models
+In this study we wouldn't use cross-validation for tuning single model, it is computationally expensive and we have no guarantee, that single algorithm (even perfectly tuned) would be the best choice. Instead, we would apply some machine learning algorithms and use cross-validation for comparing the results and model selection. 
+
+### Support Vector Machine
+First, we would train SVM with default radial basis and other default settings
+```{r, cache=T, warning=F, message=F}
+fitsvm<-svm(classe~., data=trainset2)
+confusionMatrix(predict(fitsvm, newdata=crossval), crossval$classe)
+```
+SVM is doing not perfect, but quite well. This is the fastest method in compare with others in our study. 
+
+### Generelized Boosted Regression
+Our second model would be GBM with different number of interactions and number of trees:
+```{r, cache=T, warning=F, message=F}
+gbmGrid <-  expand.grid(interaction.depth = c(1, 3, 5, 7), 
+                        n.trees=(1:10)*20,
+                        shrinkage = 0.1,
+                        n.minobsinnode = 20)
+set.seed(564234)
+fitGbm<-train(classe~., data=trainset2, method="gbm", verbose=F, tuneGrid = gbmGrid)
+confusionMatrix(predict(fitGbm, newdata=crossval), crossval$classe)
+```
+Plot for GBM accuracy on training set:
+```{r, cache=T, warning=F, message=F}
+trellis.par.set(caretTheme())
+plot(fitGbm)
+```
+  
+GBM is computationally expensive, but it is accurate. We have not reached maximum accuracy, as we can see on upper plot. Probably, it is possible to improve accuracy, increasing number of interactions and number of trees, and also we should check results on cross-validation set to prevent overfitting.
+
+### Random Forest
+Our third model would be RF with different number of trees:
+```{r, cache=T, warning=F, message=F}
+set.seed(858523)
+rfGrid<-expand.grid(.mtry=c(1:16))
+fitRF<-train(classe~., data=trainset2, method="rf", verbose=F, tuneGrid=rfGrid)
+confusionMatrix(predict(fitRF, newdata=crossval), crossval$classe)
+```
+```{r}
+plot(fitRF)
+```
+  
+Random forest is computationally expensive, and have even higher accuracy than GBM. We can see, than RF has maximum accuracy point with 3-5 predictors, and with increasing number of predictors, accuracy (on training set) is decreasing. We need just several predictors for our predictive algorithm, so it may be more interpretable and computationally fast in compare with other methods.
+
+### Regularized Discriminant Analysis
+Our last algorithm would be RDA with default settings:
+```{r, cache=T, warning=F, message=F}
+set.seed(3456220)
+fitRDA<-train(classe~., data=trainset2, method="rda", verbose=F)
+confusionMatrix(predict(fitRDA, newdata=crossval), crossval$classe)
+```
+We can see, that RDA has much lower accuracy, this is not proper method for this case.
+
+## SUMMARY
+We have explored some machine learning algorithms for predicting manner of barbell lifts. Our best algorithm on cross-validation set is Random Forest with 0.9918 accuracy. We don't know "right answers" for our test set (even if we tune model for 100% accuracy on cross-validation set there should be some uncertainty), but our estimated prediction accuracy should be close to this number. We can calculate estimated probability for getting 100% on automated grader as:
+```{r}
+0.9918^20
+```
+This is high enough for our purposes, so we select Random Forest algorithm as our final model.
